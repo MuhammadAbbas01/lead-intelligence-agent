@@ -15,7 +15,7 @@ from langchain_groq import ChatGroq
 
 # LLM setup
 llm = ChatGroq(
-    model="llama-3.1-8b-instant",
+    model="openai/gpt-oss-20b",
     api_key=config.GROQ_API_KEY
 )
 
