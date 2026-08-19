@@ -72,6 +72,12 @@ Run the server:
 uvicorn main:app
 ```
 
+**Or run it containerized with Docker:**
+```bash
+docker build -t lead-intelligence-agent .
+docker run -d -p 8000:8000 --env-file .env lead-intelligence-agent
+```
+
 ## API reference
 
 **Qualify a lead**
@@ -112,7 +118,7 @@ Every `/qualify` call is traced live to Braintrust, including an automatic email
 
 ## Roadmap
 
-- [ ] Containerization (Docker)
+- [x] Containerization (Docker)
 - [ ] Kubernetes deployment
 - [ ] Cloud hosting
 
