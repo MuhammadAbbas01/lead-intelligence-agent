@@ -46,6 +46,7 @@ The graph state is persisted with an **async Postgres checkpointer**, so a pause
 - **Self-healing emails**: an independent AI "judge" scores each drafted email and triggers an automatic rewrite if it fails basic quality checks
 - **Dynamic product-fit qualification**: the product/service being offered is a real input, not hardcoded — the same company can score completely differently against two different products
 - **Human-in-the-loop with a bounded retry limit**: rejections trigger a rewrite with feedback, up to a fixed number of attempts, before escalating to a human — the agent never loops forever
+- **API key authentication and per-IP rate limiting** on every endpoint, protecting both the data and the upstream LLM/search API usage from abuse
 
 ## Tech stack
 
@@ -66,6 +67,7 @@ GROQ_API_KEY=...
 TAVILY_API_KEY=...
 DATABASE_URL=...
 BRAINTRUST_API_KEY=...
+APP_API_KEY=...
 ```
 
 Run the server:
@@ -89,10 +91,13 @@ Config (API keys, DB URL) is injected via a Kubernetes Secret, not baked into th
 
 ## API reference
 
+All endpoints require an `X-API-Key` header, and are rate-limited per IP.
+
 **Qualify a lead**
 ```bash
 curl -X POST http://localhost:8000/qualify \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: <your-app-api-key>" \
   -d '{"company_name": "HubSpot", "company_description": "a CRM and marketing automation platform", "product_description": "We build custom AI agents and automation systems for businesses that want to reduce manual work."}'
 ```
 
@@ -100,18 +105,20 @@ curl -X POST http://localhost:8000/qualify \
 ```bash
 curl -X POST http://localhost:8000/review \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: <your-app-api-key>" \
   -d '{"lead_id": "LEAD-XXXX", "company_name": "HubSpot", "is_approved": false, "human_feedback": "too generic, mention their actual product"}'
 ```
 
 **View the human-escalation queue**
 ```bash
-curl http://localhost:8000/pending-escalations
+curl http://localhost:8000/pending-escalations -H "X-API-Key: <your-app-api-key>"
 ```
 
 **Manually resolve an escalated lead**
 ```bash
 curl -X POST http://localhost:8000/submit-manual-email \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: <your-app-api-key>" \
   -d '{"lead_id": "LEAD-XXXX", "email_subject": "A personal note", "email_body": "..."}'
 ```
 
@@ -129,12 +136,14 @@ Every `/qualify` call is traced live to Braintrust, including an automatic email
 
 Every push to `main` automatically triggers a GitHub Actions pipeline: builds the Docker image, runs the container, waits for a healthy startup, then runs the full test suite against the live container — failing loudly if anything breaks. Workflow: [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
-## Roadmap
+## Infrastructure
 
-- [x] Containerization (Docker)
-- [x] Kubernetes deployment (local cluster)
-- [x] CI/CD pipeline (automated build & test on every push)
-- [ ] Cloud hosting (Azure)
+This system is fully containerized and deployed, not just designed:
+
+- **Docker** — packaged as a single image, verified with a full integration test run inside the container itself
+- **Kubernetes** — running as a 3-replica Deployment behind a load-balancing Service, with self-healing (a killed pod is automatically replaced) and zero-downtime rolling updates
+- **CI/CD** — every push to `main` triggers GitHub Actions: builds the image, runs it, waits for a healthy startup, and runs the full test suite against the live container
+- **Next step:** cloud hosting (Azure) for public access
 
 ## License
 
