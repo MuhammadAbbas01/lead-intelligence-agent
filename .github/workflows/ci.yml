@@ -1,0 +1,73 @@
+name: CI - Build and Test Lead Intelligence Agent
+
+# Runs automatically on every push or pull request to main.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Get the latest code from the repo
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. Build the Docker image - fails the pipeline immediately if the Dockerfile is broken
+      - name: Build Docker image
+        run: docker build -t lead-intelligence-agent .
+
+      # 3. Run the container using secrets stored in GitHub (Settings -> Secrets -> Actions)
+      #    Never put real API keys directly in this file - GitHub Secrets keeps them hidden.
+      - name: Run container
+        run: |
+          docker run -d -p 8000:8000 \
+            -e GROQ_API_KEY="${{ secrets.GROQ_API_KEY }}" \
+            -e TAVILY_API_KEY="${{ secrets.TAVILY_API_KEY }}" \
+            -e DATABASE_URL="${{ secrets.DATABASE_URL }}" \
+            -e BRAINTRUST_API_KEY="${{ secrets.BRAINTRUST_API_KEY }}" \
+            -e APP_API_KEY="${{ secrets.APP_API_KEY }}" \
+            --name lead-agent-container \
+            lead-intelligence-agent
+
+      # 4. Wait for the app to actually finish starting up before testing it
+      - name: Wait for app to be healthy
+        run: |
+          for i in {1..15}; do
+            if curl -s -f http://localhost:8000/docs > /dev/null; then
+              echo "App is up"
+              exit 0
+            fi
+            echo "Waiting for app to start... ($i/15)"
+            sleep 3
+          done
+          echo "App did not start in time"
+          docker logs lead-agent-container
+          exit 1
+
+      # 5. Install Python test dependencies
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: pip install requests pytest python-dotenv
+
+      # 6. Run the real test suite against the running container
+      - name: Run tests
+        env:
+          APP_API_KEY: ${{ secrets.APP_API_KEY }}
+        run: pytest test_main.py -v
+
+      # 7. Always show logs and clean up, even if tests failed - keeps the runner clean
+      - name: Show container logs (for debugging failures)
+        if: always()
+        run: docker logs lead-agent-container
+
+      - name: Clean up
+        if: always()
+        run: docker rm -f lead-agent-container
