@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+pydantic
+psycopg[binary,pool]
+langgraph
+langgraph-checkpoint-postgres
+langchain-core
+langchain-groq
+langchain-community
+python-dotenv
+braintrust
+autoevals
+pytest
+requests
+slowapi

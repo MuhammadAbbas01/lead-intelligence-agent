@@ -5,5 +5,4 @@ __pycache__/
 venv/
 .venv/
 result.txt
-*.txt
 *.sh
