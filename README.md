@@ -1,5 +1,7 @@
 # AI Lead Intelligence Agent
 
+![CI](https://github.com/MuhammadAbbas01/lead-intelligence-agent/actions/workflows/ci.yml/badge.svg)
+
 An autonomous lead-qualification agent that researches a company, scores its fit against a given product/service, drafts a personalized outreach email, and routes the result through a human-in-the-loop review process with automatic self-correction and escalation — built on **LangGraph**, **FastAPI**, and **Supabase (Postgres)**, with evaluation and observability via **Braintrust**.
 
 ## What it does
@@ -78,6 +80,13 @@ docker build -t lead-intelligence-agent .
 docker run -d -p 8000:8000 --env-file .env lead-intelligence-agent
 ```
 
+**Or deploy it to Kubernetes** (manifests included — `deployment.yaml`, `service.yaml`):
+```bash
+kubectl create secret generic lead-agent-secrets --from-env-file=.env
+kubectl apply -f deployment.yaml -f service.yaml
+```
+Config (API keys, DB URL) is injected via a Kubernetes Secret, not baked into the image. Rolling updates (`kubectl rollout restart deployment lead-agent-deployment`) replace pods with zero downtime.
+
 ## API reference
 
 **Qualify a lead**
@@ -116,11 +125,16 @@ curl -X POST http://localhost:8000/submit-manual-email \
 
 Every `/qualify` call is traced live to Braintrust, including an automatic email-quality score attached to each generated email — giving a real-time view into agent behavior beyond pass/fail testing.
 
+## CI/CD
+
+Every push to `main` automatically triggers a GitHub Actions pipeline: builds the Docker image, runs the container, waits for a healthy startup, then runs the full test suite against the live container — failing loudly if anything breaks. Workflow: [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
 ## Roadmap
 
 - [x] Containerization (Docker)
-- [ ] Kubernetes deployment
-- [ ] Cloud hosting
+- [x] Kubernetes deployment (local cluster)
+- [x] CI/CD pipeline (automated build & test on every push)
+- [ ] Cloud hosting (Azure)
 
 ## License
 

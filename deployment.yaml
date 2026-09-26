@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lead-agent-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lead-agent
+  template:
+    metadata:
+      labels:
+        app: lead-agent
+    spec:
+      containers:
+      - name: lead-agent
+        image: lead-intelligence-agent:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8000
+        envFrom:
+        - secretRef:
+            name: lead-agent-secrets
