@@ -1,11 +1,11 @@
 # AI Lead Intelligence Agent
 
 [![CI](https://github.com/MuhammadAbbas01/lead-intelligence-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/MuhammadAbbas01/lead-intelligence-agent/actions/workflows/ci.yml)
-![Python](https://img.shields.io/badge/python-3.12-blue)
-![FastAPI](https://img.shields.io/badge/FastAPI-async-009688)
-![Docker](https://img.shields.io/badge/Docker-containerized-2496ED)
-![Kubernetes](https://img.shields.io/badge/Kubernetes-deployed-326CE5)
-![License](https://img.shields.io/badge/license-MIT-lightgrey)
+[![Python](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-async-009688)](https://fastapi.tiangolo.com/)
+[![Docker](https://img.shields.io/badge/Docker-containerized-2496ED)](https://www.docker.com/)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-deployed-326CE5)](https://kubernetes.io/)
+[![License](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
 An autonomous lead-qualification agent that researches a company, scores its fit against a given product/service, drafts a personalized outreach email, and routes the result through a human-in-the-loop review process with automatic self-correction and escalation — built on **LangGraph**, **FastAPI**, and **Supabase (Postgres)**, with evaluation and observability via **Braintrust**.
 
@@ -18,6 +18,7 @@ An autonomous lead-qualification agent that researches a company, scores its fit
 - [Getting started](#getting-started)
 - [API reference](#api-reference)
 - [Testing & evaluation](#testing--evaluation)
+- [Database & persistence](#database--persistence)
 - [Observability](#observability)
 - [CI/CD](#cicd)
 - [Infrastructure](#infrastructure)
@@ -147,9 +148,25 @@ curl -X POST http://localhost:8000/submit-manual-email \
 - `python3 eval_research.py` — Braintrust evaluation: does the research step find the *correct* company (guards against the agent mixing up a target company with an unrelated one)
 - `python3 eval_qualify.py` — Braintrust evaluation: does the scoring step produce sensible, product-aware judgments
 
+## Database & persistence
+
+Supabase (hosted Postgres) is used in two distinct ways, through two different connection modes:
+
+| Use case | Connection type | Why |
+|---|---|---|
+| LangGraph checkpointer (`agent.py`) | Session pooler, port `5432`, via an `AsyncConnectionPool` | Needs a long-lived connection to persist paused agent state, so a review can be approved hours later. Originally a single raw connection — see the bug fix below. |
+| Application queries (`database.py`) | Transaction pooler, port `6543`, via `DatabaseManager` | Short-lived queries (create/update a lead, fetch escalations) — better suited to a transaction pooler, which recycles connections per query. |
+
+Both use `check=AsyncConnectionPool.check_connection`, so a connection Supabase has silently closed is detected and replaced automatically instead of failing the next request.
+
 ## Observability
 
-Every `/qualify` call is traced live to Braintrust, including an automatic email-quality score attached to each generated email — giving a real-time view into agent behavior beyond pass/fail testing.
+- Every `/qualify` call is wrapped in `@traced` and sent live to **Braintrust**, including the full input (company + product description) and the agent's output.
+- An independent LLM "judge" (`score_email_quality`) grades each generated email on three criteria — mentions the actual product, professional tone, personalized (not generic) — and that score is logged to the same trace via `current_span().log(scores=...)`.
+- Two standalone evaluation scripts run *outside* the live API, against fixed test cases, to catch regressions before they reach production traffic:
+  - `eval_research.py` — does the research step correctly identify the target company, rather than confusing it with an unrelated one with a similar name
+  - `eval_qualify.py` — does the scoring step produce sensible, product-aware judgments rather than a generic company rating
+- This gives three layers of quality signal: automated tests (does it work), live tracing (what did it actually do for a real request), and evaluation scripts (is output quality holding up over time)
 
 ## CI/CD
 
