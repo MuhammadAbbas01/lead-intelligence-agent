@@ -1,8 +1,26 @@
 # AI Lead Intelligence Agent
 
 [![CI](https://github.com/MuhammadAbbas01/lead-intelligence-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/MuhammadAbbas01/lead-intelligence-agent/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.12-blue)
+![FastAPI](https://img.shields.io/badge/FastAPI-async-009688)
+![Docker](https://img.shields.io/badge/Docker-containerized-2496ED)
+![Kubernetes](https://img.shields.io/badge/Kubernetes-deployed-326CE5)
+![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 An autonomous lead-qualification agent that researches a company, scores its fit against a given product/service, drafts a personalized outreach email, and routes the result through a human-in-the-loop review process with automatic self-correction and escalation — built on **LangGraph**, **FastAPI**, and **Supabase (Postgres)**, with evaluation and observability via **Braintrust**.
+
+## Contents
+
+- [What it does](#what-it-does)
+- [Architecture](#architecture)
+- [Key engineering details](#key-engineering-details)
+- [Tech stack](#tech-stack)
+- [Getting started](#getting-started)
+- [API reference](#api-reference)
+- [Testing & evaluation](#testing--evaluation)
+- [Observability](#observability)
+- [CI/CD](#cicd)
+- [Infrastructure](#infrastructure)
 
 ## What it does
 
