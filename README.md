@@ -140,6 +140,26 @@ Every push to `main` automatically triggers a GitHub Actions pipeline: builds th
 
 This system is fully containerized and deployed, not just designed:
 
+```mermaid
+flowchart LR
+    Dev[Code push to main] --> CI[GitHub Actions CI/CD]
+    CI --> Build[Build Docker image]
+    Build --> Run[Run container]
+    Run --> Health[Wait for healthy startup]
+    Health --> Test[Run full pytest suite<br/>against the live container]
+    Test -->|pass| Pass([✅ Build passes])
+    Test -->|fail| Fail([❌ Build fails loudly])
+
+    Build -.->|image also loaded into| K8s[Kubernetes cluster]
+    K8s --> Deploy[Deployment: 3 replicas]
+    Deploy --> Pod1[Pod 1]
+    Deploy --> Pod2[Pod 2]
+    Deploy --> Pod3[Pod 3]
+    Pod1 & Pod2 & Pod3 --> Svc[Service: load balancing]
+    Deploy -->|pod dies| SelfHeal[Self-healing:<br/>new pod created automatically]
+    Deploy -->|new image| Rolling[Rolling update:<br/>zero downtime]
+```
+
 - **Docker** — packaged as a single image, verified with a full integration test run inside the container itself
 - **Kubernetes** — running as a 3-replica Deployment behind a load-balancing Service, with self-healing (a killed pod is automatically replaced) and zero-downtime rolling updates
 - **CI/CD** — every push to `main` triggers GitHub Actions: builds the image, runs it, waits for a healthy startup, and runs the full test suite against the live container
