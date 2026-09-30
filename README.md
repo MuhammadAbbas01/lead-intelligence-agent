@@ -46,7 +46,8 @@ The graph state is persisted with an **async Postgres checkpointer**, so a pause
 - **Self-healing emails**: an independent AI "judge" scores each drafted email and triggers an automatic rewrite if it fails basic quality checks
 - **Dynamic product-fit qualification**: the product/service being offered is a real input, not hardcoded — the same company can score completely differently against two different products
 - **Human-in-the-loop with a bounded retry limit**: rejections trigger a rewrite with feedback, up to a fixed number of attempts, before escalating to a human — the agent never loops forever
-- **API key authentication and per-IP rate limiting** on every endpoint, protecting both the data and the upstream LLM/search API usage from abuse
+- **API key authentication and per-IP rate limiting** on every endpoint (5/min on the two LLM-backed routes, 10–20/min on the lighter DB-only routes), protecting both the data and the upstream LLM/search API usage from abuse
+- **Found and fixed a real production bug**: the LangGraph checkpointer originally held a single raw Postgres connection that Supabase silently closed after a period of idle time, causing every request to fail with no restart. Replaced it with a connection pool with automatic dead-connection detection, matching the pattern already used elsewhere in the codebase — confirmed fixed by running the full test suite again after a long idle period
 
 ## Tech stack
 
@@ -160,10 +161,19 @@ flowchart LR
     Deploy -->|new image| Rolling[Rolling update:<br/>zero downtime]
 ```
 
-- **Docker** — packaged as a single image, verified with a full integration test run inside the container itself
-- **Kubernetes** — running as a 3-replica Deployment behind a load-balancing Service, with self-healing (a killed pod is automatically replaced) and zero-downtime rolling updates
-- **CI/CD** — every push to `main` triggers GitHub Actions: builds the image, runs it, waits for a healthy startup, and runs the full test suite against the live container
-- **Next step:** cloud hosting (Azure) for public access
+**How this actually works, step by step:**
+
+1. A code push to `main` triggers GitHub Actions automatically — no manual deploy step.
+2. The pipeline builds a fresh Docker image from the `Dockerfile`, exactly the same image whether it runs locally or in the cluster.
+3. It starts a real container from that image and polls `/docs` until the app reports healthy, rather than assuming it started correctly.
+4. The full `pytest` suite runs against that *live* container over HTTP — the same way a real client would call it — not against mocked internals.
+5. A single failed assertion fails the whole pipeline loudly; nothing broken can silently merge.
+6. Separately, the same built image is loaded into a Kubernetes cluster (`kind` for local development) and run as a **Deployment** of 3 replica pods.
+7. A **Service** in front of the pods gives one stable address and spreads incoming traffic across whichever pods are currently healthy.
+8. If a pod is killed or crashes, the Deployment controller detects the mismatch between desired and actual replica count and creates a replacement automatically — verified by manually deleting a running pod and watching a new one appear within seconds.
+9. Pushing a new image and running `kubectl rollout restart` replaces all 3 pods one at a time, so the Service always has at least one healthy pod to route to — no downtime window.
+
+**Next step:** cloud hosting (Azure) so the system is reachable outside the local machine.
 
 ## License
 
