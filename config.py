@@ -8,3 +8,4 @@ TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 BRAINTRUST_API_KEY = os.environ.get("BRAINTRUST_API_KEY")
 MAX_ATTEMPTS = 3
+APP_API_KEY = os.environ.get("APP_API_KEY")

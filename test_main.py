@@ -18,6 +18,12 @@ than exact values. That's the normal way to test an AI-backed system.
 
 import requests
 import pytest
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+API_KEY = os.environ.get("APP_API_KEY")
+HEADERS = {"X-API-KEY": API_KEY}
 
 BASE_URL = "http://localhost:8000"
 PRODUCT_DESCRIPTION = "We build custom AI agents, LangGraph-based workflows, and AI-powered automation systems for businesses that want to save time, reduce manual work, and integrate LLMs into their operations."
@@ -29,7 +35,7 @@ def test_qualify_returns_valid_response():
         "company_name": "Slack",
         "company_description": "a business team communication and collaboration platform",
         "product_description": PRODUCT_DESCRIPTION
-    })
+    }, headers=HEADERS)
 
     assert response.status_code == 200
 
@@ -46,7 +52,7 @@ def test_qualify_pending_review_has_email():
         "company_name": "Stripe",
         "company_description": "a payment infrastructure company",
         "product_description": PRODUCT_DESCRIPTION
-    })
+    }, headers=HEADERS)
     data = response.json()
 
     if data["status"] == "pending_review":
@@ -61,7 +67,7 @@ def test_review_approve_flow():
         "company_name": "HubSpot",
         "company_description": "a CRM and marketing automation platform",
         "product_description": PRODUCT_DESCRIPTION
-    })
+    }, headers=HEADERS)
     qualify_data = qualify_response.json()
 
     if qualify_data["status"] != "pending_review":
@@ -74,7 +80,7 @@ def test_review_approve_flow():
         "company_name": "HubSpot",
         "is_approved": True,
         "human_feedback": ""
-    })
+    }, headers=HEADERS)
 
     assert review_response.status_code == 200
     review_data = review_response.json()
@@ -84,7 +90,7 @@ def test_review_approve_flow():
 
 def test_pending_escalations_returns_list():
     """/pending-escalations should always return a list (even if empty)."""
-    response = requests.get(f"{BASE_URL}/pending-escalations")
+    response = requests.get(f"{BASE_URL}/pending-escalations", headers=HEADERS)
     assert response.status_code == 200
     assert isinstance(response.json(), list)
 
@@ -94,5 +100,5 @@ def test_qualify_missing_fields_is_rejected():
     response = requests.post(f"{BASE_URL}/qualify", json={
         "company_name": "IncompleteCo"
         # missing company_description on purpose
-    })
+    }, headers=HEADERS)
     assert response.status_code == 422

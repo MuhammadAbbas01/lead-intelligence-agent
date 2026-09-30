@@ -7,7 +7,7 @@ from typing import Annotated, Optional, TypedDict, Union
 from langgraph.graph import StateGraph, END, START
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-import psycopg
+from psycopg_pool import AsyncConnectionPool
 from langchain_core.messages import SystemMessage, HumanMessage
 from tools import tavily_tool
 from pydantic import BaseModel, Field, field_validator
@@ -39,9 +39,9 @@ class SearchQuery(BaseModel):
 
 # ── COMPANY INFO THE SYSYTEM NEED TO RETRIVE THIS SPECIFIC DATA FROMTAVILY SEARCH TOOL. ──────────────────────────────────────────
 class companyinfo(BaseModel):
-    company_info: str = Field(None, description="Information of the Company")
+    company_info: Optional[str] = Field(None, description="Information of the Company")
     company_website: Optional[str] = Field(None, description="Website of the Company")
-    company_problem: str = Field(None, description="Problem of the Company")
+    company_problem: Optional[str] = Field(None, description="Problem of the Company")
     company_size: Optional[Union[int, str]] = Field(None, description="Size of the Company")
 
     @field_validator("company_size")
@@ -358,11 +358,25 @@ async def build_graph():
 
 
     # Compile
-    # The checkpointer needs one long-lived connection, so it uses the Session pooler (port 5432)
-    # instead of the Transaction pooler in DATABASE_URL, which is only meant for short connections.
+    # The checkpointer needs a long-lived Postgres connection, so it uses the Session pooler
+    # (port 5432) instead of the Transaction pooler in DATABASE_URL, which is only meant for
+    # short connections.
+    #
+    # We use a connection POOL here (not a single raw connection) because a single connection
+    # can silently die if it sits idle too long (Supabase closes idle connections) - and then
+    # every request fails with "the connection is closed" until the whole app is restarted.
+    # A pool with check=check_connection detects dead connections and replaces them automatically,
+    # the same way database.py's DatabaseManager already does.
     checkpointer_db_url = config.DATABASE_URL.replace(":6543/", ":5432/")
-    pg_conn = await psycopg.AsyncConnection.connect(checkpointer_db_url, autocommit=True, prepare_threshold=0)
-    memory = AsyncPostgresSaver(pg_conn)
+    pool = AsyncConnectionPool(
+        conninfo=checkpointer_db_url,
+        max_size=10,
+        kwargs={"autocommit": True, "prepare_threshold": 0},
+        check=AsyncConnectionPool.check_connection,
+        open=False,
+    )
+    await pool.open()
+    memory = AsyncPostgresSaver(pool)
     await memory.setup()
     graph = graph_builder.compile(interrupt_before=['Wait_for_human'], checkpointer=memory)
     #display(Image(graph.get_graph(xray=1).draw_mermaid_png()))

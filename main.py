@@ -1,10 +1,13 @@
-from config import DATABASE_URL
+from config import DATABASE_URL, APP_API_KEY
 import agent
 import json
 import uvicorn
 from pydantic import BaseModel
 import time
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, Depends, Request
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from database import DatabaseManager
 from braintrust import init_logger, traced, current_span
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -58,6 +61,15 @@ app_graph = None
 
 app =  FastAPI(title="AI Support Agent")
 
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+def verify_api_key(x_api_key: str =  Header(...)):
+    if x_api_key != APP_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+
+
 @app.on_event("startup")
 async def startup_event():
     global app_graph
@@ -69,13 +81,14 @@ async def shutdown_event():
     await db.close_pool()
 
 @app.post("/qualify")
+@limiter.limit("5/minute")
 @traced
-async def qualify_lead(request: LeadRequest):
-    lead_id = await db.create_lead(request.company_name, request.company_description)
+async def qualify_lead(request: Request, lead_request: LeadRequest, _: None= Depends(verify_api_key)):
+    lead_id = await db.create_lead(lead_request.company_name, lead_request.company_description)
     thread = {"configurable": {"thread_id": lead_id}}
-    formatted_data = {"company_name": request.company_name, "company_description":
-         request.company_description,
-         "product_description": request.product_description,
+    formatted_data = {"company_name": lead_request.company_name, "company_description":
+         lead_request.company_description,
+         "product_description": lead_request.product_description,
          "attempt_count": 0,
          "max_attempts": 3}
 
@@ -90,7 +103,7 @@ async def qualify_lead(request: LeadRequest):
 
     if final_state.next == ():
         await db.update_lead(lead_id, 
-        company_name = request.company_name,
+        company_name = lead_request.company_name,
         status = "not_qualified", 
         qualify_reason = final_event.get("qualify_reason", ""),
         company_info = final_event.get("company_info", ""),
@@ -101,7 +114,7 @@ async def qualify_lead(request: LeadRequest):
 
         return {
             "lead_id": lead_id,
-            "company_name": request.company_name,
+            "company_name": lead_request.company_name,
             "status": "not_qualified",
             "qualify_score": final_event.get("qualify_score", 0),
             "qualify_reason": final_event.get("qualify_reason", ""),
@@ -109,20 +122,20 @@ async def qualify_lead(request: LeadRequest):
         }
         
     else:
-        email_score = await score_email_quality(final_event.get("email_subject", ""), final_event.get("email_body", ""), request.product_description)
+        email_score = await score_email_quality(final_event.get("email_subject", ""), final_event.get("email_body", ""), lead_request.product_description)
 
         rewrite_attempts = 0
         while email_score < 0.5 and rewrite_attempts < 2:
             rewritten = await agent.WriteEmail(final_event)
             final_event["email_subject"] = rewritten["email_subject"]
             final_event["email_body"] = rewritten["email_body"]
-            email_score = await score_email_quality(final_event["email_subject"], final_event["email_body"], request.product_description)
+            email_score = await score_email_quality(final_event["email_subject"], final_event["email_body"], lead_request.product_description)
             rewrite_attempts += 1
 
         current_span().log(scores={"email_quality": email_score})
 
         await db.update_lead(lead_id,
-        company_name = request.company_name,
+        company_name = lead_request.company_name,
         status = "pending_review", 
         qualify_score = final_event.get("qualify_score", 0),
         qualify_reason = final_event.get("qualify_reason", ""),
@@ -145,7 +158,7 @@ async def qualify_lead(request: LeadRequest):
 
         return {
             "lead_id": lead_id,
-            "company_name": request.company_name,
+            "company_name": lead_request.company_name,
             "status": "pending_review",
             "qualify_score": final_event.get("qualify_score", 0),
             "email_subject": final_event.get("email_subject", ""),
@@ -154,92 +167,95 @@ async def qualify_lead(request: LeadRequest):
         }    
 
 @app.post("/review")
-async def review_email(request: ReviewRequest):
-    thread = {"configurable": {"thread_id": request.lead_id}}
+@limiter.limit("5/minute")
+async def review_email(request: Request, review_request: ReviewRequest, _: None = Depends(verify_api_key)):
+    thread = {"configurable": {"thread_id": review_request.lead_id}}
 
 
-    await app_graph.aupdate_state(thread, {"human_feedback": request.human_feedback, "is_approved": request.is_approved}, as_node="Wait_for_human") 
+    await app_graph.aupdate_state(thread, {"human_feedback": review_request.human_feedback, "is_approved": review_request.is_approved}, as_node="Wait_for_human") 
 
     try:
         async for event in app_graph.astream(None, thread, stream_mode="values"):
             final_event = event
     except Exception as e:
-        await db.update_lead(request.lead_id, status="failed")
+        await db.update_lead(review_request.lead_id, status="failed")
         raise
 
     final_state = await app_graph.aget_state(thread)    
 
 
     if final_event.get("escalation_summary"):
-        await db.update_lead(request.lead_id, 
+        await db.update_lead(review_request.lead_id, 
         status = "escalated",
-         company_name = request.company_name,
+         company_name = review_request.company_name,
         escalation_summary=json.dumps(final_event.get("escalation_summary", "")) )
 
         return {
             "status": "escalated",
             "escalation_summary": final_event.get("escalation_summary", ""),
-            "company_name": request.company_name,
+            "company_name": review_request.company_name,
         
         }
     
     elif final_state.next == ():
-        await db.update_lead(request.lead_id, 
+        await db.update_lead(review_request.lead_id, 
         status = "approved",
-         company_name = request.company_name,
+         company_name = review_request.company_name,
         is_approved = final_event.get("is_approved", None) )
 
         return {
             "status": "approved",
             "is_approved": final_event.get("is_approved", None),
-            "company_name": request.company_name,
+            "company_name": review_request.company_name,
             
         }    
 
     else:
-        await db.update_lead(request.lead_id, 
+        await db.update_lead(review_request.lead_id, 
         status = "pending_review",
-        company_name = request.company_name,
-        human_feedback = request.human_feedback,
+        company_name = review_request.company_name,
+        human_feedback = review_request.human_feedback,
         email_subject = final_event.get("email_subject", ""),
         email_body = final_event.get("email_body", ""))
 
         await db.save_draft(
-        lead_id=request.lead_id,
+        lead_id=review_request.lead_id,
         attempt_number=final_event.get("attempt_count", 0) + 1,
         email_subject=final_event.get("email_subject", ""),
         email_body=final_event.get("email_body", ""),
         is_approved=False,
-        human_feedback=request.human_feedback
+        human_feedback=review_request.human_feedback
         )
 
         return {
             "status": "pending_review",
-            "company_name": request.company_name,
+            "company_name": review_request.company_name,
             "email_subject": final_event.get("email_subject", ""),
             "email_body": final_event.get("email_body", ""),
             
         } 
 
 @app.get("/pending-escalations")
-async def pending_escalations():
+@limiter.limit("20/minute")
+async def pending_escalations(request: Request, _: None = Depends(verify_api_key)):
     return await db.get_pending_escalations()
 
 
 @app.post("/submit-manual-email")
-async def submit_manual_email(request: ManualEmailRequest):
+@limiter.limit("10/minute")
+async def submit_manual_email(request: Request, manual_request: ManualEmailRequest, _: None = Depends(verify_api_key)):
     await db.update_lead(
-        request.lead_id, 
+        manual_request.lead_id, 
         status = "resolved",
-        email_body = request.email_body,
-        email_subject = request.email_subject,
+        email_body = manual_request.email_body,
+        email_subject = manual_request.email_subject,
         is_approved = True
     )
 
     return {
         "status": "resolved",
-        "email_body": request.email_body,
-        "email_subject":  request.email_subject
+        "email_body": manual_request.email_body,
+        "email_subject":  manual_request.email_subject
     }
 
 
