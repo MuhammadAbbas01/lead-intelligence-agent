@@ -19,6 +19,7 @@ An autonomous lead-qualification agent that researches a company, scores its fit
 - [API reference](#api-reference)
 - [Testing & evaluation](#testing--evaluation)
 - [Database & persistence](#database--persistence)
+- [Known limitations](#known-limitations)
 - [Observability](#observability)
 - [CI/CD](#cicd)
 - [Infrastructure](#infrastructure)
@@ -56,9 +57,20 @@ flowchart TD
 
 The graph state is persisted with an **async Postgres checkpointer**, so a paused review survives a server restart — approving or rejecting a lead hours later works exactly the same as immediately after.
 
+### How the routing and self-healing actually work
+
+The agent is a state machine (LangGraph), not a single prompt — each box in the diagram above is a separate node, and the arrows between them are conditional routing decisions made in code, not by the model deciding what to do next:
+
+- **Qualification gate**: after `Qualify`, a plain Python `if score >= 7` decides whether to proceed to `WriteEmail` or stop at `not_qualified`. The model scores; the routing is deterministic.
+- **Email self-healing**: after a draft is written, a separate LLM call (`score_email_quality`) grades it against three fixed criteria. If it scores below 0.5, the graph loops back to `WriteEmail` — up to 2 extra attempts — before ever showing a human anything. This catches a generic or off-topic draft before it wastes a reviewer's time.
+- **Bounded human-feedback loop**: a `human_feedback`/`is_approved` state is written by `POST /review`. If rejected and `attempt_count < max_attempts` (3), the graph routes back to `WriteEmail` with that feedback included in the next prompt. If the limit is reached, it routes to `MANUAL_ESCALATION` instead of retrying forever.
+- **Escalation**: once escalated, the lead's `escalation_summary` is written to the database and the lead appears in `GET /pending-escalations` — a human then resolves it directly via `POST /submit-manual-email`, bypassing the LLM entirely for that lead.
+
+None of this routing lives in a prompt — it's plain `if`/`while` logic reading fields off the graph state, with the LLM only ever responsible for scoring or generating content, never for deciding what happens next.
+
 ## Key engineering details
 
-- **Fully async** end-to-end (FastAPI → LangGraph → Postgres) with a real async connection pool, verified under concurrent load
+- **Fully async** end-to-end (FastAPI → LangGraph → Postgres), using connection pools rather than a single shared connection, so multiple requests can be handled concurrently without one request blocking another on database I/O
 - **Persistent, restart-safe state** via `AsyncPostgresSaver`, not in-memory
 - **Retry logic** around LLM calls, since small/fast models occasionally return malformed structured output
 - **Output validation** on LLM-generated fields (e.g. clamping an out-of-range qualification score, correcting a mis-typed employee count) rather than trusting raw model output
@@ -113,6 +125,13 @@ Config (API keys, DB URL) is injected via a Kubernetes Secret, not baked into th
 
 All endpoints require an `X-API-Key` header, and are rate-limited per IP.
 
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/qualify` | POST | Entry point. Takes a company + product description, runs the full research → score → draft pipeline, and returns either `not_qualified` or `pending_review` with a drafted email. |
+| `/review` | POST | A human decision on a pending lead. Approve, or reject with feedback — feedback is fed back into the agent for a rewrite. |
+| `/pending-escalations` | GET | Lists leads that hit the 3-rejection limit and need a human to write the email manually. |
+| `/submit-manual-email` | POST | Resolves an escalated lead with a human-written email, bypassing the LLM for that lead. |
+
 **Qualify a lead**
 ```bash
 curl -X POST http://localhost:8000/qualify \
@@ -158,6 +177,39 @@ Supabase (hosted Postgres) is used in two distinct ways, through two different c
 | Application queries (`database.py`) | Transaction pooler, port `6543`, via `DatabaseManager` | Short-lived queries (create/update a lead, fetch escalations) — better suited to a transaction pooler, which recycles connections per query. |
 
 Both use `check=AsyncConnectionPool.check_connection`, so a connection Supabase has silently closed is detected and replaced automatically instead of failing the next request.
+
+### Data model
+
+Two tables in Supabase Postgres:
+
+**`leads`** — one row per lead, updated in place as it moves through the pipeline
+| Column | Purpose |
+|---|---|
+| `lead_id` | Primary key, e.g. `LEAD-9615B60B` |
+| `company_name`, `company_description` | The original input |
+| `status` | `processing` → `not_qualified` / `pending_review` → `approved` / `escalated` / `resolved` |
+| `qualify_score`, `qualify_reason` | The product-fit score and the model's reasoning for it |
+| `company_info`, `company_website`, `company_problem`, `company_size` | Structured facts extracted by the research step |
+| `email_subject`, `email_body` | The current draft |
+| `human_feedback`, `escalation_summary` | Set when a reviewer rejects, or when escalated |
+| `updated_at` | Set on every update, so it also doubles as an audit trail of the last change |
+
+**`lead_drafts`** — one row per email draft attempt, so the full revision history is kept even after `leads` moves on
+| Column | Purpose |
+|---|---|
+| `draft_id` | Primary key |
+| `lead_id` | Which lead this draft belongs to |
+| `attempt_number` | 1st draft, 1st rewrite, 2nd rewrite, etc. |
+| `email_subject`, `email_body` | That attempt's content |
+| `is_approved`, `human_feedback` | The outcome of that specific attempt |
+
+## Known limitations
+
+Being upfront about what this project has *not* yet done, rather than implying otherwise:
+
+- No formal load testing or latency benchmarking has been run — the async/pooling design is intended to handle concurrent requests without blocking, but no specific throughput or response-time numbers have been measured
+- Kubernetes is currently running locally via `kind`, not on a public cloud cluster — anyone outside the local machine can review the manifests and CI/CD, but can't hit a live public endpoint yet (Azure deployment is the planned next step)
+- The escalation path (3 rejections → manual resolution) is implemented and covered by the routing logic above, but not yet exercised by an automated test
 
 ## Observability
 
