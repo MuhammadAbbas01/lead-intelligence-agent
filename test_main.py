@@ -53,6 +53,7 @@ def test_qualify_pending_review_has_email():
         "company_description": "a payment infrastructure company",
         "product_description": PRODUCT_DESCRIPTION
     }, headers=HEADERS)
+    assert response.status_code == 200, f"Expected 200, got {response.status_code}: {response.text}"
     data = response.json()
 
     if data["status"] == "pending_review":
@@ -68,6 +69,7 @@ def test_review_approve_flow():
         "company_description": "a CRM and marketing automation platform",
         "product_description": PRODUCT_DESCRIPTION
     }, headers=HEADERS)
+    assert qualify_response.status_code == 200, f"Expected 200, got {qualify_response.status_code}: {qualify_response.text}"
     qualify_data = qualify_response.json()
 
     if qualify_data["status"] != "pending_review":

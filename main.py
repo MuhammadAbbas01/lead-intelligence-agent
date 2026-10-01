@@ -5,6 +5,7 @@ import uvicorn
 from pydantic import BaseModel
 import time
 from fastapi import FastAPI, Header, HTTPException, Depends, Request
+from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -64,6 +65,17 @@ app =  FastAPI(title="AI Support Agent")
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Guarantees every error response is valid JSON, even for an unexpected
+    failure (e.g. the upstream LLM provider's rate limit being exhausted after
+    our own retries). Without this, FastAPI's default error page is plain
+    text, which breaks any client expecting a JSON API."""
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An internal error occurred while processing the request.", "error_type": type(exc).__name__},
+    )
 
 def verify_api_key(x_api_key: str =  Header(...)):
     if x_api_key != APP_API_KEY:
