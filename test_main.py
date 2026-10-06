@@ -104,3 +104,54 @@ def test_qualify_missing_fields_is_rejected():
         # missing company_description on purpose
     }, headers=HEADERS)
     assert response.status_code == 422
+
+
+def test_escalation_after_three_rejections():
+    """A lead rejected 3 times in a row must escalate to a human, then be
+    resolvable via the manual-email route - the full unhappy path, not just
+    the happy path the other tests cover."""
+    qualify_response = requests.post(f"{BASE_URL}/qualify", json={
+        "company_name": "Zendesk",
+        "company_description": "a customer service and support ticketing platform",
+        "product_description": PRODUCT_DESCRIPTION
+    }, headers=HEADERS)
+    assert qualify_response.status_code == 200, f"Expected 200, got {qualify_response.status_code}: {qualify_response.text}"
+    qualify_data = qualify_response.json()
+
+    if qualify_data["status"] != "pending_review":
+        pytest.skip("Lead did not qualify this run, cannot test escalation flow")
+
+    lead_id = qualify_data["lead_id"]
+
+    # Reject the same lead 3 times - max_attempts is 3, so the 3rd rejection
+    # should trigger escalation instead of another rewrite.
+    last_response = None
+    for attempt in range(3):
+        last_response = requests.post(f"{BASE_URL}/review", json={
+            "lead_id": lead_id,
+            "company_name": "Zendesk",
+            "is_approved": False,
+            "human_feedback": "still not good enough, try again"
+        }, headers=HEADERS)
+        assert last_response.status_code == 200, f"Rejection {attempt + 1} failed: {last_response.status_code}: {last_response.text}"
+
+    final_data = last_response.json()
+    assert final_data["status"] == "escalated"
+    assert final_data.get("escalation_summary")
+
+    # It should now show up in the human-escalation queue.
+    pending_response = requests.get(f"{BASE_URL}/pending-escalations", headers=HEADERS)
+    assert pending_response.status_code == 200
+    pending_ids = [lead.get("lead_id") for lead in pending_response.json()]
+    assert lead_id in pending_ids
+
+    # A human resolves it manually - this should always succeed regardless
+    # of what the LLM did, since it bypasses the agent entirely.
+    resolve_response = requests.post(f"{BASE_URL}/submit-manual-email", json={
+        "lead_id": lead_id,
+        "email_subject": "Manually written follow-up",
+        "email_body": "Writing this one by hand since the automated drafts didn't land."
+    }, headers=HEADERS)
+    assert resolve_response.status_code == 200
+    resolve_data = resolve_response.json()
+    assert resolve_data["status"] == "resolved"
