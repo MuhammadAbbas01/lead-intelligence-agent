@@ -43,8 +43,12 @@ flowchart TD
     Research --> Qualify[Qualify<br/>product-fit scoring 0-10]
     Qualify -->|score < 7| NotQualified([not_qualified])
     Qualify -->|score >= 7| WriteEmail[WriteEmail<br/>personalized draft]
-    WriteEmail --> QualityCheck{Email quality<br/>self-check}
-    QualityCheck -->|below bar, retry x2| WriteEmail
+
+    subgraph API["FastAPI layer (main.py) — outside the LangGraph graph"]
+        WriteEmail -.->|plain Python while loop,<br/>calls WriteEmail directly| QualityCheck{Email quality<br/>self-check}
+        QualityCheck -.->|below bar, retry x2| WriteEmail
+    end
+
     QualityCheck -->|passes| Wait[Wait_for_human<br/>interrupt]
     Wait --> Review[POST /review]
     Review -->|approved| Approved([approved])
@@ -55,14 +59,14 @@ flowchart TD
     Manual --> Resolved([resolved])
 ```
 
-The graph state is persisted with an **async Postgres checkpointer**, so a paused review survives a server restart — approving or rejecting a lead hours later works exactly the same as immediately after.
+The graph state is persisted with an **async Postgres checkpointer**, so a paused review survives a server restart — approving or rejecting a lead hours later works exactly the same as immediately after. Note that the pre-review quality self-check (dashed box above) runs as a loop in the API layer, not as a node inside the graph itself — the rewritten draft is saved to the database but not written back into the graph's own checkpointed state, since no human has seen it yet at that point.
 
 ### How the routing and self-healing actually work
 
 The agent is a state machine (LangGraph), not a single prompt — each box in the diagram above is a separate node, and the arrows between them are conditional routing decisions made in code, not by the model deciding what to do next:
 
 - **Qualification gate**: after `Qualify`, a plain Python `if score >= 7` decides whether to proceed to `WriteEmail` or stop at `not_qualified`. The model scores; the routing is deterministic.
-- **Email self-healing**: after a draft is written, a separate LLM call (`score_email_quality`) grades it against three fixed criteria. If it scores below 0.5, the graph loops back to `WriteEmail` — up to 2 extra attempts — before ever showing a human anything. This catches a generic or off-topic draft before it wastes a reviewer's time.
+- **Email self-healing**: after a draft is written, a separate LLM call (`score_email_quality`) grades it against three fixed criteria. If it scores below 0.5, `main.py` calls `WriteEmail` again directly in a plain `while` loop — up to 2 extra attempts — before ever showing a human anything. This runs in the API layer, not as a node inside the graph, since no human has reviewed it yet at that point. This catches a generic or off-topic draft before it wastes a reviewer's time.
 - **Bounded human-feedback loop**: a `human_feedback`/`is_approved` state is written by `POST /review`. If rejected and `attempt_count < max_attempts` (3), the graph routes back to `WriteEmail` with that feedback included in the next prompt. If the limit is reached, it routes to `MANUAL_ESCALATION` instead of retrying forever.
 - **Escalation**: once escalated, the lead's `escalation_summary` is written to the database and the lead appears in `GET /pending-escalations` — a human then resolves it directly via `POST /submit-manual-email`, bypassing the LLM entirely for that lead.
 
