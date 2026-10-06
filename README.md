@@ -213,7 +213,6 @@ Being upfront about what this project has *not* yet done, rather than implying o
 
 - No formal load testing or latency benchmarking has been run — the async/pooling design is intended to handle concurrent requests without blocking, but no specific throughput or response-time numbers have been measured
 - Kubernetes is currently running locally via `kind`, not on a public cloud cluster — anyone outside the local machine can review the manifests and CI/CD, but can't hit a live public endpoint yet (Azure deployment is the planned next step)
-- The escalation path (3 rejections → manual resolution) is implemented and covered by the routing logic above, but not yet exercised by an automated test
 
 ## Observability
 
